@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Danger Dave: Recharged</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#07111f;color:#fff;font-family:Inter,system-ui,Segoe UI,sans-serif;overflow:hidden}
+#wrap{width:100vw;height:100vh;display:flex;align-items:center;justify-content:center}
+canvas{display:block;width:min(100vw,177.78vh);height:min(56.25vw,100vh);image-rendering:auto;background:#0b1730;box-shadow:0 0 45px #000}
+#touch{position:fixed;inset:auto 0 18px;display:none;justify-content:space-between;padding:0 24px;pointer-events:none}
+.pad{display:flex;gap:10px}.tbtn{width:62px;height:62px;border-radius:18px;border:1px solid #ffffff44;background:#10233ecc;color:white;font-size:24px;pointer-events:auto;backdrop-filter:blur(8px)}
+@media(max-width:900px),(pointer:coarse){#touch{display:flex}}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="1280" height="720"></canvas></div>
+<div id="touch"><div class="pad"><button class="tbtn" data-k="ArrowLeft">◀</button><button class="tbtn" data-k="ArrowRight">▶</button></div><div class="pad"><button class="tbtn" data-k="Space">⤒</button></div></div>
+
+<script>
+const C=document.getElementById('game'),ctx=C.getContext('2d');
+const W=C.width,H=C.height;
+const keys={}; let state='menu',levelIndex=0,selectedChar=0,score=0,lives=3,cam=0,last=0;
+let particles=[],bullets=[],toast='',toastT=0; let shootCooldown=0;
+
+const chars=[
+ {name:'DAVE',color:'#ffbd59',accent:'#ef553f',speed:3.25,jump:12.2,desc:'Balanced explorer'},
+ {name:'MAYA',color:'#7ee8fa',accent:'#7c5cff',speed:3.65,jump:11.5,desc:'Fast & agile'},
+ {name:'ROOK',color:'#b8ff7e',accent:'#ff9e3d',speed:2.95,jump:13.4,desc:'Heavy jumper'}
+];
+
+const levels=[
+ {name:'Training Grounds',sky:['#142b55','#4e9fd0'],goal:'Reach the EXIT sign',tutorial:true,
+  spawn:[100,500], platforms:[
+   [0,640,2300,80],[180,550,180,25],[440,480,170,25],[720,400,190,25],[1020,500,190,25],
+   [1320,430,210,25],[1630,520,180,25],[1910,440,210,25]
+  ], spikes:[[650,615,70,25],[1160,615,90,25],[1780,615,90,25]],
+  gems:[[260,505],[510,435],[790,355],[1090,455],[1390,385],[1690,475],[1980,395]],
+  enemies:[[870,345,32,32,1.2],[1500,375,32,32,-1.3]],exit:[2070,365]},
+ {name:'Crystal Caverns',sky:['#100f2d','#593c9e'],goal:'Collect 6 crystals, then escape',
+  spawn:[80,500], platforms:[
+   [0,640,2700,80],[120,535,160,25],[370,450,170,25],[650,540,150,25],[900,425,180,25],
+   [1170,520,180,25],[1430,390,180,25],[1700,500,190,25],[1980,410,180,25],[2250,520,220,25]
+  ],spikes:[[540,615,100,25],[800,615,100,25],[1360,615,100,25],[1890,615,90,25],[2170,615,80,25]],
+  gems:[[180,490],[430,405],[700,495],[960,380],[1220,475],[1480,345],[1750,455],[2030,365],[2320,475]],
+  enemies:[[560,590,34,34,1.7],[1080,590,34,34,-1.5],[1550,340,34,34,1.1],[1900,590,34,34,-1.8]],
+  exit:[2420,455]},
+ {name:'Sky Fortress',sky:['#081b2a','#27859b'],goal:'Beat the fortress and reach the beacon',
+  spawn:[90,500], platforms:[
+   [0,640,3100,80],[140,540,180,25],[400,450,160,25],[650,360,170,25],[930,470,160,25],
+   [1180,330,160,25],[1430,430,170,25],[1690,310,180,25],[1980,440,160,25],[2240,350,180,25],
+   [2510,470,180,25],[2780,380,220,25]
+  ],spikes:[[330,615,70,25],[560,615,90,25],[820,615,110,25],[1320,615,110,25],[1810,615,110,25],[2160,615,80,25],[2690,615,90,25]],
+  gems:[[190,495],[455,405],[705,315],[980,425],[1230,285],[1480,385],[1740,265],[2030,395],[2290,305],[2560,425],[2840,335]],
+  enemies:[[500,410,34,34,1.6],[1010,430,34,34,-1.7],[1510,390,34,34,1.4],[2060,400,34,34,-1.8],[2600,430,34,34,1.7]],
+  exit:[2940,325]}
+];
+
+let p,world;
+function resetLevel(){
+ world=levels[levelIndex];
+ p={x:world.spawn[0],y:world.spawn[1],w:34,h:54,vx:0,vy:0,on:false,ground:false,dir:1,hp:3,inv:0};
+ world.collected=new Set();
+ particles=[]; bullets=[]; shootCooldown=0; cam=0;
+ if(world.tutorial){toast='ARROW KEYS / A-D TO MOVE • SPACE TO JUMP';toastT=5}
+}
+function startGame(){score=0;lives=3;levelIndex=0;resetLevel();state='play'}
+function nextLevel(){score+=500;levelIndex++;if(levelIndex>=levels.length){state='win'}else resetLevel()}
+function hurt(){
+ if(p.inv>0)return;
+ p.hp--;p.inv=1.5; burst(p.x+p.w/2,p.y+p.h/2,'#ff5666',16);
+ if(p.hp<=0){lives--;if(lives<=0){state='gameover'}else resetLevel()}
+}
+function burst(x,y,color,n=10){for(let i=0;i<n;i++)particles.push({x,y,vx:(Math.random()-.5)*7,vy:(Math.random()-.5)*7,life:.5+Math.random()*.5,color})}
+function text(t,x,y,size=22,align='left',alpha=1){ctx.globalAlpha=alpha;ctx.font=`700 ${size}px system-ui`;ctx.textAlign=align;ctx.fillStyle='#fff';ctx.fillText(t,x,y);ctx.globalAlpha=1}
+function roundRect(x,y,w,h,r,fill){ctx.fillStyle=fill;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill()}
+function worldToScreen(x){return x-cam}
+
+function update(dt){
+ if(state!=='play')return;
+ const c=chars[selectedChar], accel=p.ground?0.85:0.48;
+ const left=keys.ArrowLeft||keys.KeyA,right=keys.ArrowRight||keys.KeyD;
+ if(left){p.vx-=accel;p.dir=-1} if(right){p.vx+=accel;p.dir=1}
+ if(!left&&!right)p.vx*=p.ground?.78:.96;
+ p.vx=Math.max(-c.speed,Math.min(c.speed,p.vx));
+ if((keys.Space||keys.ArrowUp||keys.KeyW)&&p.on){p.vy=-c.jump;p.on=false;p.ground=false}
+ // Shoot with F, J, or Ctrl. Bullets travel in the character's facing direction.
+ shootCooldown=Math.max(0,shootCooldown-dt);
+ if((keys.KeyF||keys.KeyJ||keys.Control)&&shootCooldown<=0){
+   bullets.push({x:p.x+p.w/2+p.dir*20,y:p.y+23,vx:p.dir*11,life:1.2});
+   shootCooldown=.24; burst(p.x+p.w/2+p.dir*18,p.y+23,'#ffd45a',3);
+ }
+ p.vy+=.58;p.vy=Math.min(p.vy,16);
+ p.x+=p.vx;p.y+=p.vy;
+ p.ground=false;p.on=false;
+ for(const r of world.platforms){
+   if(p.x+p.w>r[0]&&p.x<r[0]+r[2]&&p.y+p.h>r[1]&&p.y+p.h<p.vy+dt*1000+r[1]+28&&p.vy>=0){
+     if(p.y+p.h<=r[1]+18){p.y=r[1]-p.h;p.vy=0;p.ground=true;p.on=true}
+   }
+ }
+ if(p.y>H+150){hurt();return}
+ for(const s of world.spikes){
+   if(p.x+p.w-5>s[0]&&p.x+5<s[0]+s[2]&&p.y+p.h>s[1]&&p.y+p.h<s[1]+s[3]+20)hurt();
+ }
+ for(const b of bullets){b.x+=b.vx;b.life-=dt;
+   for(const e of world.enemies){
+     if(e[0]>-500&&b.x>e[0]&&b.x<e[0]+e[2]&&b.y>e[1]&&b.y<e[1]+e[3]){
+       score+=75; burst(e[0]+16,e[1]+16,'#ffd45a',14); e[0]=-999; b.life=0; break;
+     }
+   }
+ }
+ bullets=bullets.filter(b=>b.life>0&&b.x>-100&&b.x<world.platforms[0][2]+100);
+
+ for(let i=0;i<world.enemies.length;i++){
+   const e=world.enemies[i];e[0]+=e[4];
+   let floor=640;
+   for(const r of world.platforms)if(e[0]+e[2]>r[0]&&e[0]<r[0]+r[2]&&Math.abs((e[1]+e[3])-r[1])<12)floor=r[1];
+   e[1]=floor-e[3];
+   if(e[0]<0||e[0]+e[2]>world.platforms[0][2])e[4]*=-1;
+   if(p.x+p.w>e[0]&&p.x<e[0]+e[2]&&p.y+p.h>e[1]+4&&p.y<e[1]+e[3]){
+     if(p.vy>3&&p.y+p.h<e[1]+18){score+=100;p.vy=-8;burst(e[0]+16,e[1]+16,'#ffd45a',12);e[0]=-999}
+     else hurt();
+   }
+ }
+ for(let i=0;i<world.gems.length;i++){
+   const g=world.gems[i]; if(world.collected.has(i))continue;
+   if(Math.hypot(p.x+p.w/2-g[0],p.y+p.h/2-g[1])<34){
+     world.collected.add(i);score+=25;burst(g[0],g[1],'#73f6ff',10)
+   }
+ }
+ const ex=world.exit;
+ if(p.x+p.w>ex[0]&&p.x<ex[0]+70&&p.y+p.h>ex[1]-20&&p.y<ex[1]+80){
+   if(levelIndex===1&&world.collected.size<6){toast='Collect 6 crystals first!';toastT=1.5}
+   else nextLevel();
+ }
+ if(p.inv>0)p.inv-=dt;
+ const target=Math.max(0,Math.min(world.platforms[0][2]-W,p.x-W*.35));
+ cam+=(target-cam)*Math.min(1,dt*6);
+ toastT=Math.max(0,toastT-dt);
+ for(const q of particles){q.x+=q.vx;q.y+=q.vy;q.vy+=.15;q.life-=dt}
+ particles=particles.filter(q=>q.life>0);
+}
+function drawBackground(){
+ const grad=ctx.createLinearGradient(0,0,0,H);grad.addColorStop(0,world.sky[0]);grad.addColorStop(1,world.sky[1]);ctx.fillStyle=grad;ctx.fillRect(0,0,W,H);
+ // parallax mountains
+ ctx.globalAlpha=.18;ctx.fillStyle='#bdefff';
+ for(let x=-200-(cam*.15)%500;x<W+500;x+=500){ctx.beginPath();ctx.moveTo(x,H);ctx.lineTo(x+230,230);ctx.lineTo(x+500,H);ctx.fill()}
+ ctx.globalAlpha=.12;ctx.fillStyle='#fff';for(let i=0;i<35;i++){let x=(i*173-cam*.08)%W;if(x<0)x+=W;let y=50+(i*83)%360;ctx.fillRect(x,y,2,2)}ctx.globalAlpha=1;
+}
+function drawPlatform(r){
+ const x=worldToScreen(r[0]);if(x+r[2]<0||x>W)return;
+ const grd=ctx.createLinearGradient(0,r[1],0,r[1]+r[3]);grd.addColorStop(0,'#4a5d78');grd.addColorStop(1,'#202b40');
+ ctx.fillStyle=grd;ctx.fillRect(x,r[1],r[2],r[3]);ctx.fillStyle='#93a8bf';ctx.fillRect(x,r[1],r[2],5);
+ ctx.fillStyle='#172033';for(let k=x+18;k<x+r[2];k+=42)ctx.fillRect(k,r[1]+16,20,4);
+}
+function drawSpike(s){
+ const x=worldToScreen(s[0]);ctx.fillStyle='#d9e3ef';for(let i=0;i<s[2];i+=20){ctx.beginPath();ctx.moveTo(x+i,s[1]+s[3]);ctx.lineTo(x+i+10,s[1]);ctx.lineTo(x+i+20,s[1]+s[3]);ctx.fill()}
+}
+function drawGem(g){
+ const x=worldToScreen(g[0]),y=g[1],pulse=1+Math.sin(performance.now()/180+g[0])*.08;
+ ctx.save();ctx.translate(x,y);ctx.scale(pulse,pulse);ctx.shadowBlur=20;ctx.shadowColor='#73f6ff';ctx.fillStyle='#73f6ff';ctx.beginPath();ctx.moveTo(0,-16);ctx.lineTo(11,0);ctx.lineTo(0,16);ctx.lineTo(-11,0);ctx.closePath();ctx.fill();ctx.shadowBlur=0;ctx.fillStyle='#fff';ctx.fillRect(-2,-9,4,10);ctx.restore()
+}
+function drawEnemy(e){
+ const x=worldToScreen(e[0]),y=e[1];roundRect(x,y,34,34,10,'#ff516b');ctx.fillStyle='#fff';ctx.fillRect(x+7,y+8,7,7);ctx.fillRect(x+20,y+8,7,7);ctx.fillStyle='#1c2030';ctx.fillRect(x+9,y+10,4,4);ctx.fillRect(x+21,y+10,4,4);ctx.fillStyle='#ffb347';ctx.fillRect(x+10,y+23,14,4)
+}
+function drawPlayer(){
+ const c=chars[selectedChar],x=worldToScreen(p.x),y=p.y;
+ ctx.save();ctx.globalAlpha=p.inv>0&&Math.floor(p.inv*12)%2?0.35:1;
+ // shadow
+ ctx.globalAlpha*=.25;ctx.fillStyle='#000';ctx.beginPath();ctx.ellipse(x+17,y+56,22,5,0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=p.inv>0&&Math.floor(p.inv*12)%2?0.35:1;
+ // body
+ roundRect(x+5,y+16,24,31,8,c.accent);roundRect(x+2,y+42,13,9,4,c.color);roundRect(x+19,y+42,13,9,4,c.color);
+ // head/helmet
+ ctx.fillStyle=c.color;ctx.beginPath();ctx.arc(x+17,y+13,15,0,Math.PI*2);ctx.fill();ctx.fillStyle=c.accent;ctx.fillRect(x+3,y+5,28,6);
+ // visor
+ ctx.fillStyle='#14233b';ctx.fillRect(x+8,y+12,18,7);ctx.fillStyle='#9df6ff';ctx.fillRect(x+10,y+13,10,3);
+ // backpack
+ ctx.fillStyle='#253653';ctx.fillRect(x-2,y+22,7,18);
+ ctx.restore();
+}
+function drawHUD(){
+ roundRect(18,18,360,72,18,'#07111dcc');text('DANGER DAVE: RECHARGED',36,45,18);text(`SCORE ${String(score).padStart(5,'0')}`,36,72,17);text(`LIVES ${'♥'.repeat(lives)}`,185,72,17);
+ roundRect(W-300,18,282,72,18,'#07111dcc');text(`${levelIndex+1}/3  •  ${world.name}`,W-282,47,17);text(`CRYSTALS ${world.collected.size}/${world.gems.length}`,W-282,73,16);text('F / J / CTRL = SHOOT',W-282,112,13);
+}
+function draw(){
+ drawBackground();
+ if(state==='play'){
+   for(const r of world.platforms)drawPlatform(r);
+   for(const s of world.spikes)drawSpike(s);
+   world.gems.forEach((g,i)=>!world.collected.has(i)&&drawGem(g));
+   world.enemies.forEach(e=>e[0]>-500&&drawEnemy(e));
+   const ex=world.exit,x=worldToScreen(ex[0]);roundRect(x,ex[1],70,92,10,'#0c1828');ctx.strokeStyle='#7df6b2';ctx.lineWidth=4;ctx.strokeRect(x,ex[1],70,92);text('EXIT',x+35,ex[1]+35,14,'center');ctx.fillStyle='#7df6b2';ctx.fillRect(x+14,ex[1]+50,42,5);
+   // Energy bullets
+   bullets.forEach(b=>{
+     const bx=worldToScreen(b.x);
+     ctx.save();ctx.shadowBlur=14;ctx.shadowColor='#ffd45a';ctx.fillStyle='#ffd45a';
+     ctx.beginPath();ctx.arc(bx,b.y,5,0,Math.PI*2);ctx.fill();ctx.restore();
+   });
+   drawPlayer();
+   particles.forEach(q=>{ctx.globalAlpha=Math.max(0,q.life*2);ctx.fillStyle=q.color;ctx.fillRect(worldToScreen(q.x),q.y,5,5);ctx.globalAlpha=1});
+   drawHUD();
+   if(toastT>0){roundRect(W/2-360,H-82,720,48,15,'#07111de8');text(toast,W/2,H-51,18,'center')}
+   if(levelIndex===0&&world.tutorial&&p.x<500){
+     roundRect(350,120,580,130,22,'#07111ded');text('QUICK TUTORIAL',640,155,25,'center');text('A / D or ◀ / ▶  MOVE',640,190,18,'center');text('SPACE / W / ▲  JUMP',640,218,18,'center');text('F / J / CTRL  SHOOT  •  Collect crystals • fight enemies • reach EXIT',640,244,15,'center');
+   }
+ } else drawOverlay();
+}
+function drawOverlay(){
+ ctx.fillStyle='rgba(4,9,18,.76)';ctx.fillRect(0,0,W,H);
+ if(state==='menu'){
+   text('DANGER DAVE',W/2,150,76,'center');text('RECHARGED',W/2,210,38,'center');text('A modern retro platform adventure',W/2,246,20,'center');
+   roundRect(350,300,580,235,28,'#101d32ee');
+   text('CHOOSE YOUR HERO',640,338,22,'center');
+   chars.forEach((c,i)=>{let x=405+i*175;roundRect(x,365,145,105,18,i===selectedChar?'#263f62':'#17243a');ctx.fillStyle=c.color;ctx.beginPath();ctx.arc(x+72,400,22,0,Math.PI*2);ctx.fill();text(c.name,x+72,438,17,'center');text(c.desc,x+72,460,11,'center')});
+   text('← / → select character',640,575,16,'center');text('ENTER / SPACE  START',640,610,22,'center');
+   text('3 levels • physics • enemies • collectibles • tutorial',640,665,15,'center');
+ } else if(state==='gameover'){
+   text('GAME OVER',W/2,245,64,'center');text(`Final Score: ${score}`,W/2,300,24,'center');text('Press ENTER to restart',W/2,370,22,'center');
+ } else if(state==='win'){
+   text('MISSION COMPLETE!',W/2,220,58,'center');text('The fortress is yours.',W/2,275,25,'center');text(`Final Score: ${score+1000}`,W/2,320,26,'center');text('Press ENTER to play again',W/2,390,22,'center');
+ }
+}
+function loop(t){let dt=Math.min(.033,(t-last)/1000||0);last=t;update(dt);draw();requestAnimationFrame(loop)}
+addEventListener('keydown',e=>{
+ keys[e.code]=true;
+ if(['ArrowLeft','ArrowRight','ArrowUp','Space','Control'].includes(e.code))e.preventDefault();
+ if(state==='menu'&&(e.code==='ArrowLeft'||e.code==='ArrowRight'))selectedChar=(selectedChar+(e.code==='ArrowRight'?1:2))%3;
+ if(state==='menu'&&(e.code==='Enter'||e.code==='Space'))startGame();
+ else if((state==='gameover'||state==='win')&&e.code==='Enter')startGame();
+});
+addEventListener('keyup',e=>keys[e.code]=false);
+document.querySelectorAll('.tbtn').forEach(b=>{
+ const k=b.dataset.k;b.addEventListener('pointerdown',e=>{e.preventDefault();keys[k]=true});
+ ['pointerup','pointercancel','pointerleave'].forEach(ev=>b.addEventListener(ev,e=>{keys[k]=false}));
+});
+resetLevel();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
